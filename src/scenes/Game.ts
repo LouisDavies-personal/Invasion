@@ -3,6 +3,7 @@ import { UFO } from '../objects/Ufo';
 import { Util } from '../util';
 import { LootBox } from '../objects/LootBox';
 import { UIPanel } from '../objects/UIPanel';
+import { StrongUFO } from "../objects/StrongUFO";
 
 export enum PowerType {
 	DOUBLE_FIRE = 0,
@@ -23,8 +24,13 @@ export class GameScene extends Phaser.Scene {
 	public static GameRunning: boolean = false;
 	public static Difficulty: number;
 	public static UFO_Speed: number[] = [100, 125, 150, 175, 200, 250];
+	// Strong UFO currently set to move slower than normal ufos
+	public static StrongUFO_Speed: number[] = [75, 125, 150, 175, 200, 225];
+	// The probability of a UFO spawning as a strong UFO
+	public static StrongUFO_Probability: number[] = [0.10, 0.20, 0.30, 0.40, 0.50, 0.60];
 
 	private static UFO_Points: number = 100;
+	private static StrongUFO_Points: number = 200;
 	private static MissileCooldown: number = 1000;
 	private static SymbolChangeRate: number[] = [9000, 8000, 7500, 7000, 6000, 5000];
 	private static ArrivalRate: number[] = [1800, 1600, 1400, 1100, 900, 700];
@@ -37,6 +43,7 @@ export class GameScene extends Phaser.Scene {
 	private _missiles: Phaser.Physics.Arcade.Group;
 	private _ufos: Phaser.Physics.Arcade.Group;
 	private _boxes: Phaser.Physics.Arcade.Group;
+	private _strongUfos: Phaser.Physics.Arcade.Group;
 
 	private _uiPanel: UIPanel;
 	private _uiPanelShowing: boolean;
@@ -54,7 +61,11 @@ export class GameScene extends Phaser.Scene {
 	private _launchpad: Phaser.GameObjects.Image;
 	
 	private reset(isFirstLoad: boolean = false) {
-		GameScene.Difficulty = 1;
+		// I noticed this was originally 1 which essentially missed out all the difficulty
+		// settings contained within the first elements of the arrays I though it was easier
+		// to just change this rather than all the references to it I also changed the console
+		// logs to show the level like it used to rather than the index
+		GameScene.Difficulty = 0;
 
 		this._cooldown = 0;
 		this._symbolTimer = GameScene.SymbolChangeRate[GameScene.Difficulty];
@@ -82,6 +93,12 @@ export class GameScene extends Phaser.Scene {
 		}
 		if (this._ufos) {
 			let list: Missile[] = this._ufos.getChildren() as Missile[];
+			for (let i=0; i < list.length; i++) {
+				list[i].setVisible(false);
+			}
+		}
+		if (this._strongUfos) {
+			let list: Missile[] = this._strongUfos.getChildren() as Missile[];
 			for (let i=0; i < list.length; i++) {
 				list[i].setVisible(false);
 			}
@@ -117,6 +134,8 @@ export class GameScene extends Phaser.Scene {
 		this.load.spritesheet('symbols', 'assets/symbols2.png', { frameWidth: 128, frameHeight: 128 });
 
 		this.load.spritesheet('ufo', 'assets/ufo.png', { frameWidth: 320, frameHeight: 128 });
+		// Load my lazy new ufo sprite sheet
+		this.load.spritesheet('strong_ufo', 'assets/strong_ufo.png', { frameWidth: 320, frameHeight: 128 });
 		this.load.spritesheet('box', 'assets/box.png', { frameWidth: 128, frameHeight: 128 });
 		this.load.spritesheet('bonus_icons', 'assets/bonus_icons.png', { frameWidth: 128, frameHeight: 128 });
 		this.load.spritesheet('explosion', 'assets/explode2.png', { frameWidth: 256, frameHeight: 256 });
@@ -148,6 +167,11 @@ export class GameScene extends Phaser.Scene {
 		this._ufos = this.physics.add.group({ collideWorldBounds: false	});
 		this._ufos.createMultiple({
 			frameQuantity: 10, key: "ufo", frame: 0, visible: false, active: false, classType: UFO
+		});
+
+		this._strongUfos = this.physics.add.group({ collideWorldBounds: false });
+		this._strongUfos.createMultiple( {
+			frameQuantity: 10, key: "strong_ufo", frame: 0, visible: false, active: false, classType: StrongUFO
 		});
 
 		this._boxes = this.physics.add.group({ collideWorldBounds: false });
@@ -233,6 +257,11 @@ export class GameScene extends Phaser.Scene {
 			frameRate: 12
 		});
 		this.anims.create({
+			key: "strong_ufo_killed",
+			frames: this.anims.generateFrameNumbers("strong_ufo", { start: 1, end: 4 }),
+			frameRate: 12
+		});
+		this.anims.create({
 			key: "explode",
 			frames: this.anims.generateFrameNumbers("explosion", { start: 0, end: 6 }),
 			frameRate: 20
@@ -246,6 +275,12 @@ export class GameScene extends Phaser.Scene {
 		setTimeout(() => {
 			this.physics.add.collider(
 				this._missiles, this._ufos, (m: Missile, u: UFO) => { this.onMissileHit(m, u); }
+			)
+		}, 100);
+
+		setTimeout(() => {
+			this.physics.add.collider(
+				this._missiles, this._strongUfos, (m: Missile, u: StrongUFO) => { this.onMissileHitStrong(m, u); }
 			)
 		}, 100);
 	}
@@ -272,6 +307,15 @@ export class GameScene extends Phaser.Scene {
 					u.setVelocityY(0);
 					u.setActive(false);
 					u = this._ufos.getFirstAlive();
+				}
+
+				// Loops through the arcade group of strong ufos and resets their velocities
+				// and sets them all inactive ready for the game start
+				let s: StrongUFO = this._strongUfos.getFirstAlive();
+				while (s) {
+					s.setVelocityY(0);
+					s.setActive(false);
+					s = this._strongUfos.getFirstAlive();
 				}
 
 				this._uiPanel = new UIPanel(this, window.innerWidth * 0.5, window.innerHeight * 0.44);
@@ -348,23 +392,45 @@ export class GameScene extends Phaser.Scene {
 
 		this._arrivalTimer -= delta;
 		if (this._arrivalTimer < 0) {
-			let ufo: UFO = this._ufos.getFirstDead(false);
-			if (ufo) {
-				let lane: number = Math.floor(Math.random() * 4);
-				ufo.displayWidth = GameScene.width * 0.2;
-				ufo.setScale(ufo.scaleX, ufo.scaleX);
+			// Chance of strong UFO determined by difficulty
+			if (Math.random() < GameScene.StrongUFO_Probability[GameScene.Difficulty]) {
+				let strongUfo: StrongUFO = this._strongUfos.getFirstDead(false);
+				if (strongUfo) {
+					let lane: number = Math.floor(Math.random() * 4);
+					strongUfo.displayWidth = GameScene.width * 0.25;
+					strongUfo.setScale(strongUfo.scaleX, strongUfo.scaleX);
 
-				let speed = GameScene.UFO_Speed[GameScene.Difficulty];
-				if (this._powers[PowerType.HALF_UFO_SPEED]) {
-					speed *= 0.5;
+					let speed = GameScene.StrongUFO_Speed[GameScene.Difficulty];
+					if (this._powers[PowerType.HALF_UFO_SPEED]) {
+						speed *= 0.5;
+					}
+					strongUfo.startLanding(
+						GameScene.left + GameScene.width * (0.125 + 0.25 * lane),
+						GameScene.height * -0.1,
+						speed
+					);
+
+					this._arrivalTimer = GameScene.ArrivalRate[GameScene.Difficulty];
 				}
-				ufo.startLanding(
-					GameScene.left + GameScene.width * (0.125 + 0.25 * lane),
-					GameScene.height * -0.1,
-					speed
-				);
-	
-				this._arrivalTimer = GameScene.ArrivalRate[GameScene.Difficulty];
+			} else {
+				let ufo: UFO = this._ufos.getFirstDead(false);
+				if (ufo) {
+					let lane: number = Math.floor(Math.random() * 4);
+					ufo.displayWidth = GameScene.width * 0.2;
+					ufo.setScale(ufo.scaleX, ufo.scaleX);
+
+					let speed = GameScene.UFO_Speed[GameScene.Difficulty];
+					if (this._powers[PowerType.HALF_UFO_SPEED]) {
+						speed *= 0.5;
+					}
+					ufo.startLanding(
+						GameScene.left + GameScene.width * (0.125 + 0.25 * lane),
+						GameScene.height * -0.1,
+						speed
+					);
+
+					this._arrivalTimer = GameScene.ArrivalRate[GameScene.Difficulty];
+				}
 			}
 		}
 
@@ -372,7 +438,7 @@ export class GameScene extends Phaser.Scene {
 		if (this._difficultyTimer < 0) {
 			GameScene.Difficulty = Math.min(GameScene.Difficulty + 1, 5);
 			this._difficultyTimer = GameScene.DifficultyChangeRate;
-			console.log("DIFFICULTY HAS INCREASED:", GameScene.Difficulty);
+			console.log("DIFFICULTY HAS INCREASED:", GameScene.Difficulty + 1);
 		}
 	}
 
@@ -446,6 +512,50 @@ export class GameScene extends Phaser.Scene {
 				box.drop(xPos, yPos, this._powers);
 				console.log("BOX DROPPED");
 			}
+		}
+	}
+
+	/**
+	 * Called when a missile makes contact with a strong ufo damages the ufo, destroys the missile
+	 * if the unstoppable missile power is not active and if it kills the ufo adds score and has
+	 * an increased chance of dropping a box
+	 * @param missile: the missile involved in thhe collision
+	 * @param ufo: the ufo involved in the collision
+	 */
+	private async onMissileHitStrong(missile: Missile, ufo: StrongUFO) {
+		let xPos: number = ufo.x;
+		let yPos: number = ufo.y;
+
+		if (this._powers[PowerType.UNSTOPABLE_MISSILES]) {
+			missile.setVelocityY(-300);
+		} else {
+			missile.kill();
+		}
+
+		let explosion = this.add.sprite(ufo.x, ufo.y, 'explosion');
+		explosion.on("animationcomplete", () => {
+			explosion.destroy();
+		});
+		explosion.play("explode");
+
+		if (ufo.damageAndCheckIfWillKill()) {
+			this._score += GameScene.StrongUFO_Points;
+			if (this._powers[PowerType.DOUBLE_POINTS]) {
+				this._score += GameScene.StrongUFO_Points;
+			}
+			this._scoreText.text = "Score: " + Util.formatNumber(this._score);
+
+			if (Math.random() < 0.14) {
+				let box: LootBox = this._boxes.getFirstDead(false);
+				if (box) {
+					box.displayHeight = GameScene.height * 0.05;
+					box.displayWidth = box.displayHeight;
+					box.drop(xPos, yPos, this._powers);
+					console.log("BOX DROPPED");
+				}
+			}
+		} else {
+			ufo.setVelocity(0, GameScene.StrongUFO_Speed[GameScene.Difficulty]);
 		}
 	}
 }
